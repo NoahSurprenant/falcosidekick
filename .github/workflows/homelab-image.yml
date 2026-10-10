@@ -1,0 +1,59 @@
+name: homelab-image
+
+# Builds this branch - upstream 2.35.0 with the PolicyReport conflict fix (falcosecurity/falcosidekick#1455)
+# cherry-picked - for linux/amd64 and linux/arm64, and pushes it to ghcr.io/noahsurprenant/falcosidekick,
+# until upstream releases the fix. Same Dockerfile and build flags as upstream's images.
+on:
+  push:
+    branches: [homelab-2.35.0-conflictfix]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/noahsurprenant/falcosidekick
+  VERSION: 2.35.0-conflictfix
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Test the PolicyReport output
+        run: go test -race ./outputs/ -run 'PolicyReport'
+
+      - name: Build the binaries
+        run: |
+          set -euo pipefail
+          ldflags="-s -w -X main.GitVersion=$VERSION -X main.gitCommit=$GITHUB_SHA -X main.gitTreeState=clean -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "linux/$arch/falcosidekick" .
+          done
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=$GITHUB_SHA \
+            -t "$IMAGE:$VERSION" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
+          docker buildx imagetools inspect "$IMAGE:$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
