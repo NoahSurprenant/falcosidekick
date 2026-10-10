@@ -11,6 +11,8 @@ on:
 permissions:
   contents: read
   packages: write
+  # Keyless cosign signature (Sigstore), which the homelab's Kyverno policy checks.
+  id-token: write
 
 env:
   IMAGE: ghcr.io/noahsurprenant/falcosidekick
@@ -49,11 +51,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
+        with:
+          cosign-release: v2.2.4
+
+      - name: Build, push and sign
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64,linux/arm64 \
+          docker buildx build --platform linux/amd64,linux/arm64 --metadata-file metadata.json \
             --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
             --label org.opencontainers.image.revision=$GITHUB_SHA \
             -t "$IMAGE:$VERSION" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
+          digest=$(sed -n 's/.*"containerimage.digest": *"\(sha256:[0-9a-f]*\)".*/\1/p' metadata.json)
+          test -n "$digest"
+          cosign sign --yes "$IMAGE@$digest"
+          echo "Signed $IMAGE@$digest" >> "$GITHUB_STEP_SUMMARY"
           docker buildx imagetools inspect "$IMAGE:$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
